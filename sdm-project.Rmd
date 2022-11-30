@@ -1,0 +1,638 @@
+---
+title: "Predit Hotel Bookings Cancellations"
+author: |
+    | Bharatwaj Majji 
+    | UB PERSON ID: 50442312
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(plyr)
+library(ggplot2)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(varImp)
+library(ggcorrplot)
+library(class)
+library(gbm)
+library(reshape2)
+```
+
+# 1. "Visualize And Understand the dataset"
+
+```{r}
+set.seed(1) # seed for any random generation
+df = read.csv('hotel_bookings.csv')
+head(df)
+dim(df)
+```
+
+**Columns with MissingValues**
+```{r}
+cat("Columns with NA values - ", names(which(sapply(df, function(x) any(is.na(x))))), "\n")
+cat("Columns with NULL values - ", names(which(sapply(df, function(x) any(x=='NULL')))), "\n")
+```
+
+**Handle Missing Values columns**
+```{r}
+df$children = ifelse(is.na(df$children), 0, df$children)
+df$country = ifelse(df$country == 'NULL', 'Unknown', df$country)
+df$agent = ifelse(df$agent == 'NULL', 0, df$agent)
+df$company = ifelse(df$company == 'NULL', 0, df$company)
+df$guests_stayed = df$adults + df$children + df$babies
+df$nights_stayed = df$stays_in_week_nights + df$stays_in_weekend_nights
+df <- subset(df, select = -c(adults, children, babies, stays_in_week_nights, stays_in_weekend_nights))
+```
+
+**Correlation b/w numerical variables**
+```{r}
+res <- cor(df[sapply(df,is.numeric)])
+res[order(res[,1],decreasing=TRUE), ncol=1]
+```
+From, this we can understand that 
+lead_time, previous_cancellations has strongest correlations > 0.1
+while total_of_special_requests, required_car_parking_spaces, booking_changes has least correlations.
+
+```{r}
+cor<- cor(data.matrix(df))
+ggcorrplot(cor, lab=TRUE, type='lower')
+data.frame(cor)
+```
+
+**Lead Time vs Cancellations**
+```{r}
+lead_100 = ddply(filter(df, lead_time<100), .(is_canceled), nrow)
+piepercent<- round(100*lead_100$V1/sum(lead_100$V1), 1)
+pie(x=lead_100$V1, labels=piepercent, col=rainbow(length(lead_100$V1)))
+legend('topright', c('not_canceled', 'canceled'), cex = 0.8, fill=rainbow(length(lead_100$V1)))
+
+lead_365 = ddply(filter(df, lead_time>=100 & lead_time < 365), .(is_canceled), nrow) #less than an year
+piepercent<- round(100*lead_365$V1/sum(lead_365$V1), 1)
+pie(x=lead_365$V1, labels=piepercent, col=rainbow(length(lead_365$V1)))
+legend('topright', c('not_canceled', 'canceled'), cex = 0.8, fill=rainbow(length(lead_365$V1)))
+
+lead_365_gt = ddply(filter(df, lead_time >= 365), .(is_canceled), nrow)
+piepercent<- round(100*lead_365_gt$V1/sum(lead_365_gt$V1), 1)
+pie(x=lead_365_gt$V1, labels=piepercent, col=rainbow(length(lead_365_gt$V1)))
+legend('topright', c('not_canceled', 'canceled'), cex = 0.8, fill=rainbow(length(lead_365_gt$V1)))
+```
+From this we can understand that as lead_time increases the chances of booking cancellation as well increases.
+
+**Previous Cancelations vs Cancelations**
+```{r}
+cat("Never previously cancelled -", mean(filter(df, previous_cancellations==0)$is_canceled), "%", "\n")
+cat("Previously cancelled once -", mean(filter(df, previous_cancellations==1)$is_canceled), "%", "\n")
+cat("Previously cancelled more than 11 -", mean(filter(df, previous_cancellations>11)$is_canceled), "%", "\n")
+```
+As the number of previous cancelations increases the chances of booking cancelations as well increases.
+
+**Special Requests vs Cancelations**
+```{r}
+hist(main='Special Requests vs Cancelations', xlab='Special Requests', filter(df, is_canceled==0)$total_of_special_requests,col="green",pch=20,cex=4,breaks=15)
+hist(filter(df, is_canceled==1)$total_of_special_requests,col="red",pch=20,cex=4,breaks=15,add=TRUE)
+legend("topright", c("canceled", "not_canceled"), fill=c("red", "green"))
+box()
+```
+From the above graph we can understand that as the number of special requests increases the booking cancelation percentage decreases.
+
+**Parking Spaces vs Cancelations**
+```{r}
+
+print("Parking spaces for not canceled bookings - ")
+ddply(filter(df, is_canceled==0), .(required_car_parking_spaces), nrow)
+
+print("Parking spaces for canceled bookings - ")
+ddply(filter(df, is_canceled==1), .(required_car_parking_spaces), nrow)
+```
+From this we can understand the model can tune in such a way that if the number of required spaces is zero the booking can be canceled which is not the case ideally. So, we can ignore this feature while modeling.
+
+**Categorical variables**
+
+**Hotel vs Cancelations**
+```{r}
+ordered_months <- c("January", "February", "March", "April", "May", "June",
+          "July", "August", "September", "October", "November", "December")
+
+city_0 <- ddply(filter(df, is_canceled==0 & hotel=='City Hotel'), .(arrival_date_month), nrow)
+city_1 <- ddply(filter(df, is_canceled==1 & hotel=='City Hotel'), .(arrival_date_month), nrow)
+
+resort_0 <- ddply(filter(df, is_canceled==0 & hotel=='Resort Hotel'), .(arrival_date_month), nrow)
+resort_1 <- ddply(filter(df, is_canceled==1 & hotel=='Resort Hotel'), .(arrival_date_month), nrow)
+
+resort_cancel <- rep()
+city_cancel <- rep()
+
+for (month in ordered_months) {
+  resort_0_mon <- filter(resort_0, arrival_date_month==month)
+  resort_1_mon <- filter(resort_1, arrival_date_month==month)
+  resort_cancel <- append(resort_cancel, resort_1_mon[1, "V1"]/(resort_1_mon[1, "V1"]+resort_0_mon[1, "V1"]))
+  
+  city_0_mon <- filter(city_0, arrival_date_month==month)
+  city_1_mon <- filter(city_1, arrival_date_month==month)
+  city_cancel <- append(city_cancel, city_1_mon[1, "V1"]/(city_1_mon[1, "V1"]+city_0_mon[1, "V1"]))
+}
+result <- data.frame(resort_cancel=resort_cancel, city_cancel=city_cancel, row.names=ordered_months)
+result
+```
+From the above stats we can understand that wrt month city hotels has more booking cancelations compared to resort hotels according to arrival months.
+
+**Meal vs Cancelations**
+```{r}
+cancelled_meal <- ddply(filter(df, is_canceled==1), .(meal), nrow)
+uncancelled_meal <- ddply(filter(df, is_canceled==0), .(meal), nrow)
+percent <- rep()
+for (val in cancelled_meal$meal) {
+  cancel_val <- filter(cancelled_meal, meal==val)[1, "V1"]
+  uncancel_val <- filter(uncancelled_meal, meal==val)[1, "V1"]
+  percent <- append(percent, cancel_val/(cancel_val+uncancel_val))
+}
+result <- data.frame(meal=cancelled_meal$meal, percent_cancellations=percent)
+result
+```
+From this we can understand that FB meal is the most frequently canceled booking. And meal Undefined can relate to SC no-meal.
+
+**MarketSegment vs Cancelations**
+```{r}
+cancelled_market <- ddply(filter(df, is_canceled==1), .(market_segment), nrow)
+uncancelled_market <- ddply(filter(df, is_canceled==0), .(market_segment), nrow)
+percent <- rep()
+for (val in cancelled_market$market_segment) {
+  cancel_val <- filter(cancelled_market, market_segment==val)[1, "V1"]
+  uncancel_val <- filter(uncancelled_market, market_segment==val)[1, "V1"]
+  percent <- append(percent, cancel_val/(cancel_val+uncancel_val))
+}
+result <- data.frame(market_segment=cancelled_market$market_segment, percent_cancellations=percent)
+result
+```
+
+**DistributionChannel vs Cancelations**
+```{r}
+cancelled_channel <- ddply(filter(df, is_canceled==1), .(distribution_channel), nrow)
+uncancelled_channel <- ddply(filter(df, is_canceled==0), .(distribution_channel), nrow)
+percent <- rep()
+for (val in cancelled_channel$distribution_channel) {
+  cancel_val <- filter(cancelled_channel, distribution_channel==val)[1, "V1"]
+  uncancel_val <- filter(uncancelled_channel, distribution_channel==val)[1, "V1"]
+  percent <- append(percent, cancel_val/(cancel_val+uncancel_val))
+}
+result <- data.frame(distribution_channel=cancelled_channel$distribution_channel, percent_cancellations=percent)
+result
+```
+
+**CustomerType vs Cancelations**
+```{r}
+cancelled_cust <- ddply(filter(df, is_canceled==1), .(customer_type), nrow)
+uncancelled_cust <- ddply(filter(df, is_canceled==0), .(customer_type), nrow)
+percent <- rep()
+for (val in cancelled_cust$customer_type) {
+  cancel_val <- filter(cancelled_cust, customer_type==val)[1, "V1"]
+  uncancel_val <- filter(uncancelled_cust, customer_type==val)[1, "V1"]
+  percent <- append(percent, cancel_val/(cancel_val+uncancel_val))
+}
+result <- data.frame(customer_type=cancelled_cust$customer_type, percent_cancellations=percent)
+result
+```
+
+**DepositType vs Cancelations**
+```{r}
+cancelled_deposit <- ddply(filter(df, is_canceled==1), .(deposit_type), nrow)
+uncancelled_deposit <- ddply(filter(df, is_canceled==0), .(deposit_type), nrow)
+percent <- rep()
+for (val in cancelled_deposit$deposit_type) {
+  cancel_val <- filter(cancelled_deposit, deposit_type==val)[1, "V1"]
+  uncancel_val <- filter(uncancelled_deposit, deposit_type==val)[1, "V1"]
+  percent <- append(percent, cancel_val/(cancel_val+uncancel_val))
+}
+result <- data.frame(deposit_type=cancelled_deposit$deposit_type, percent_cancellations=percent)
+result
+```
+
+From the above we can see that non-refund bookings has 99 percent cancelations which is weird since ideally non-refund transactions tend to have lower cancelations. Looks like the values of cancelled and not-cancelled must have swapped up for non-refund transactions. Let us check this while modeling.
+
+# 2. "Data Cleaning"
+
+**Remove rows with zero guests**
+```{r}
+df <- filter(df, guests_stayed>0)
+```
+**Drop irrelevant columns**
+```{r}
+df <- subset(df, select = -c(agent, company, booking_changes, arrival_date_day_of_month, arrival_date_year))
+df <- subset(df, select = -c(reservation_status, reservation_status_date, assigned_room_type, country) )
+```
+Numerical Columns:
+- agent & company => These columns are uninformative since they contain discrete codes for the agents and company using which the booking is made.
+- booking_changes => Could constantly change over time and has no much effect on the predictor.
+- arrival_date_day_of_month & arrival_date_year => Prevents the model from generalizing, since we have arrival_week information that would be sufficient.
+
+Categorical Columns:
+- reservation_status => It has values Check-Out, Cancelled and No-Show which means not-canceled and canceled considering this feature can cause the model to overfit.
+- reservation_status_date => Date when the reservation_status is last changed this is not relevant.
+- assigned_room_type => This is irrelevant and more over reserved_room_type makes more sense since the booking can be canceled only before checking-in which means room is assigned.
+- country => There are many countries and not uniformly distributed so there are higher chances that this model can prevent the model from generalising.
+
+**Replace value of column**
+```{r}
+df["meal"][df["meal"] == "Undefined"] <- "SC"
+```
+
+**Encode categorical data**
+```{r}
+df$hotel <- as.numeric(as.factor(df$hotel))  # Convert categories to numbers
+df$arrival_date_month <- as.numeric(as.factor(df$arrival_date_month))
+df$meal <- as.numeric(as.factor(df$meal))
+df$market_segment <- as.numeric(as.factor(df$market_segment))
+df$distribution_channel <- as.numeric(as.factor(df$distribution_channel))
+df$reserved_room_type <- as.numeric(as.factor(df$reserved_room_type))
+df$deposit_type <- as.numeric(as.factor(df$deposit_type))
+df$customer_type <- as.numeric(as.factor(df$customer_type))
+```
+
+**Scale the dataset**
+```{r}
+df$lead_time <- scale(df$lead_time)
+df$adr <- scale(df$adr)
+```
+
+**HeatMap of the dataset**
+```{r}
+heatmap(data.matrix(df), col=rainbow(256))
+```
+
+**SMOTE Analysis**
+```{r}
+canceled_count <- count(df[,'is_canceled']==1)
+canceled_count
+df_x <- subset(df, select = -c(is_canceled))
+df_smote <- SMOTE(df_x, df$is_canceled, K = 5)
+df_smote
+```
+
+
+**Divide the dataset into test and train**
+```{r}
+head(df)
+idx <- sample(nrow(df), nrow(df)*0.3) 
+test <- df[idx,]
+train <-df[-idx,]
+```
+
+**Logistic Regression**
+```{r}
+log_classifier = glm(formula=is_canceled ~ ., family=binomial, data=train)
+summary(log_classifier)
+
+prob_pred = predict(log_classifier, train, type='response')
+y_pred = ifelse(prob_pred > 0.5, 1, 0)
+cm=table(y_pred, train$is_canceled)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Train Accuracy for Logistic Regression -", accuracy, "\n")
+
+prob_pred = predict(log_classifier, test, type='response')
+y_pred = ifelse(prob_pred > 0.5, 1, 0)
+
+# Making the Confusion Matrix
+cat("Prediction vs Actual table for Logistic Regression below -")
+cm=table(y_pred, test$is_canceled)
+cat("Test error rate for Logistic Regression -", mean(y_pred != test$is_canceled), "\n")
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Test Accuracy for Logistic Regression -", accuracy, "\n")
+```
+
+**Cross Validation for Logistic Regression**
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+folds = createFolds(train$is_canceled, k = 10)
+cv = lapply(folds, function(x) {
+  training_fold = train[-x, ]
+  test_fold = train[x, ]
+  log_classifier = glm(formula=is_canceled ~ ., family=binomial, data=training_fold)
+  prob_pred = predict(log_classifier, test_fold, type='response')
+  y_pred = ifelse(prob_pred > 0.5, 1, 0)
+  cm=table(y_pred, test_fold$is_canceled)
+  accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+  return(accuracy)
+})
+accuracy = mean(as.numeric(cv))
+accuracy
+```
+
+**KNN**
+```{r}
+y_pred = knn(train=subset(train, select = -c(is_canceled)),
+             test=subset(train, select = -c(is_canceled)),
+             cl=train$is_canceled,
+             k = 5,
+             prob = TRUE)
+cm <- table(train$is_canceled, y_pred)
+cm
+cat("Test error rate for KNN -", mean(y_pred != train$is_canceled))
+```
+
+
+**Cross Validation for KNN**
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+folds = createFolds(train$is_canceled, k = 10)
+cv = lapply(folds, function(x) {
+  training_fold = train[-x, ]
+  test_fold = train[x, ]
+  y_pred = knn(train=subset(training_fold, select = -c(is_canceled)),
+             test=subset(test_fold, select = -c(is_canceled)),
+             cl=training_fold$is_canceled,
+             k = 5,
+             prob = TRUE)
+  cm=table(y_pred, test_fold$is_canceled)
+  accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+  return(accuracy)
+})
+accuracy = mean(as.numeric(cv))
+accuracy
+```
+
+**Decision Tree**
+```{r}
+y_train = train$is_canceled
+y_test = test$is_canceled
+tree.fit = rpart(is_canceled ~ ., data=train, method='class')
+tree.pred.train <- predict(tree.fit, train, type='class')
+cat("Confusion Matrix for trees - \n")
+cm <- table(tree.pred.train, y_train)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Train Accuracy for Decision Tree -", accuracy, "\n")
+
+tree.pred.test <- predict(tree.fit, test, type='class')
+cat("Confusion Matrix for trees - \n")
+cm <- table(tree.pred.test, y_test)
+cat("Test error for trees -", mean(tree.pred.test != y_test))
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Accuracy for Decision Tree -", accuracy, "\n")
+rpart.plot(tree.fit)
+```
+**Cross Validation for Decision Tree**
+```{r}
+folds = createFolds(train$is_canceled, k = 10)
+cv = lapply(folds, function(x) {
+  training_fold = train[-x, ]
+  test_fold = train[x, ]
+  tree.fit = rpart(is_canceled ~ ., data=training_fold, method='class')
+  tree.pred.test <- predict(tree.fit, test_fold, type='class')
+  cm=table(tree.pred.test, test_fold$is_canceled)
+  accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+  return(accuracy)
+})
+accuracy = mean(as.numeric(cv))
+accuracy
+```
+
+```{r}
+imp <- data.frame(imp = tree.fit$variable.importance)
+df2 <- imp %>% 
+  tibble::rownames_to_column() %>% 
+  dplyr::rename("variable" = rowname) %>% 
+  dplyr::arrange(imp) %>%
+  dplyr::mutate(variable = forcats::fct_inorder(variable))
+ggplot2::ggplot(df2) +
+  geom_col(aes(x = variable, y = imp),
+           col = "black", show.legend = F) +
+  coord_flip() +
+  scale_fill_grey() +
+  theme_bw()
+```
+**Pruned Tree**
+```{r}
+(best_cp <- tree.fit$cptable[which.min(tree.fit$cptable[, "xerror"]), "CP"])
+tree.prune <- prune(tree.fit, cp=best_cp)
+tree.prune.pred.train <- predict(tree.prune, train, type="class")
+cm <- table(tree.prune.pred.train, train$is_canceled)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Train Accuracy for PrunedTree -", accuracy, "\n")
+
+tree.prune.pred.test <- predict(tree.prune, test, type="class")
+cat("Confusion Matrix for pruned tree - \n")
+cm <- table(tree.prune.pred.test, test$is_canceled)
+cat("Test error for pruned trees -", mean(tree.prune.pred.test != test$is_canceled))
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Accuracy for PrunedTree -", accuracy, "\n")
+rpart.plot(tree.prune)
+```
+
+```{r}
+imp <- data.frame(imp = tree.prune$variable.importance)
+df2 <- imp %>% 
+  tibble::rownames_to_column() %>% 
+  dplyr::rename("variable" = rowname) %>% 
+  dplyr::arrange(imp) %>%
+  dplyr::mutate(variable = forcats::fct_inorder(variable))
+ggplot2::ggplot(df2) +
+  geom_col(aes(x = variable, y = imp),
+           col = "black", show.legend = F) +
+  coord_flip() +
+  scale_fill_grey() +
+  theme_bw()
+```
+
+**Random Forest**
+```{r}
+train_rf = train
+train_rf$is_canceled = as.factor(train_rf$is_canceled)
+rf <- randomForest(is_canceled~., data = train_rf)
+```
+
+```{r}
+#train_rf = train
+#train_rf$is_canceled = as.factor(train_rf$is_canceled)
+#p2_rf <- predict(rf, train_rf)
+#confusionMatrix(p2_rf, train_rf$is_canceled)
+
+test_rf = test
+test_rf$is_canceled = as.factor(test_rf$is_canceled)
+p2_rf <- predict(rf, test_rf)
+confusionMatrix(p2_rf, test_rf$is_canceled)
+```
+```{r}
+cm <- table(p2_rf, test_rf$is_canceled)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Accuracy for RandomForest -", accuracy, "\n")
+```
+
+```{r}
+varImpPlot(rf, 
+           sort = T,
+           n.var = 10,
+           main = "top 10 - variable importance")
+importance(rf)
+varUsed(rf)
+```
+```{r}
+pca1<-prcomp(df)
+loads<-pca1$rotation
+scores<-pca1$x
+#Select number of PCs
+plot(pca1$sdev)
+```
+
+```{r}
+data <- cor(df[sapply(df,is.numeric)])
+ 
+data1 <- melt(data)
+ 
+ggplot(data1, aes(x = Var1,
+                  y = Var2,
+                  fill = value))+geom_tile()
+```
+
+```{r}
+cor<- cor(data.matrix(df))
+ggcorrplot(cor, lab=TRUE)
+```
+
+```{r}
+rf.pred.test <- predict(rf, test, type = "class")
+#cm <- table(rf.pred.test, test$is_canceled)
+confusionMatrix(rf.pred.test, as.factor(test$is_canceled))
+
+```
+```{r}
+table(factor(train_rf$Stage))
+library(caret)
+p1_rf <- predict(rf,train_rf)
+confusionMatrix(p1_rf,train_rf$Stage)
+```
+
+```{r}
+oj.randomForest.pred <- predict(oj.randomForest, train, type = "class")
+cat("Confusion Matrix for randomForest - \n")
+rf.pred.test = predict(rf, newdata=test)
+cat("Confusion Matrix for randomForest - \n")
+cm <- table(rf.pred.test, test$is_canceled)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Accuracy for RandomForest -", accuracy, "\n")
+varImpPlot(rf, sort = T, n.var = 10, main = "Top 10 features")
+```
+
+**AdaBoost**
+```{r}
+adaboost <- gbm(is_canceled ~ ., data=train,
+  distribution = "adaboost",
+  n.trees = 500
+)
+adaboost.pred <- predict(adaboost, train, type='response') %>% round()
+cm <- table(adaboost.pred, train$is_canceled)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+accuracy
+
+adaboost.pred <- predict(adaboost, test, type='response') %>% round()
+cm <- table(adaboost.pred, test$is_canceled)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+accuracy
+```
+
+```{r}
+summary(adaboost)
+```
+
+**BoxPlots**
+```{r}
+outlier_df <- df
+outlier_df <- subset(outlier_df, select=c(deposit_type, adr, total_of_special_requests, market_segment, lead_time, is_canceled))
+head(outlier_df)
+
+boxplot(outlier_df$lead_time, horizontal = TRUE)
+outliers = boxplot(outlier_df$lead_time, plot=FALSE)$out
+outlier_df = outlier_df[-which(outlier_df$lead_time %in% outliers),]
+#idx <- sample(nrow(outlier_df), nrow(outlier_df)*0.3) 
+#outlier_test <- outlier_df[idx,]
+#outlier_train <- outlier_df[-idx,]
+
+```
+```{r}
+boxplot(outlier_df$adr, horizontal = TRUE)
+```
+
+```{r}
+boxplot(outlier_df$adr, horizontal = TRUE)
+outliers = boxplot(outlier_df$adr, plot=FALSE)$out
+outlier_df = outlier_df[-which(outlier_df$adr %in% outliers),]
+
+boxplot(outlier_df$lead_time, horizontal = TRUE)
+outliers = boxplot(outlier_df$lead_time, plot=FALSE)$out
+outlier_df = outlier_df[-which(outlier_df$lead_time %in% outliers),]
+```
+
+```{r}
+box_plot <- data.frame(adr = outlier_df$adr,
+                   deposit_type = outlier_df$deposit_type,
+                   total_spl_requests = outlier_df$total_of_special_requests,
+                   market_segment=outlier_df$market_segment,
+                   lead_time=outlier_df$lead_time)
+boxplot(box_plot)
+```
+
+```{r}
+idx <- sample(nrow(outlier_df), nrow(outlier_df)*0.3) 
+outlier_test <- outlier_df[idx,]
+outlier_train <-outlier_df[-idx,]
+```
+
+```{r}
+outlier_train_rf = outlier_train
+outlier_train_rf$is_canceled = as.factor(outlier_train_rf$is_canceled)
+outlier_rf <- randomForest(is_canceled~., data = outlier_train_rf)
+confusionMatrix(outlier_rf, outlier_train_rf$is_canceled)
+
+outlier_test_rf = outlier_test
+outlier_test_rf$is_canceled = as.factor(outlier_test_rf$is_canceled)
+outlier_p2_rf <- predict(outlier_rf, outlier_test_rf)
+confusionMatrix(outlier_p2_rf, outlier_test_rf$is_canceled)
+
+cm <- table(outlier_p2_rf, outlier_test_rf$is_canceled)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Accuracy for RandomForest Outliers -", accuracy, "\n")
+
+varImpPlot(outlier_rf, 
+           sort = T,
+           n.var = 10,
+           main = "top 10 - variable importance")
+importance(outlier_rf)
+varUsed(outlier_rf)
+```
+
+```{r}
+outlier_df <- df
+outlier_df <- subset(outlier_df, select=c(deposit_type, adr, total_of_special_requests, market_segment, lead_time, is_canceled))
+head(outlier_df)
+
+```
+
+```{r}
+outlier_train_rf = outlier_train
+outlier_train_rf$is_canceled = as.factor(outlier_train_rf$is_canceled)
+outlier_rf <- randomForest(is_canceled~., data = outlier_train_rf)
+```
+
+```{r}
+outlier_train_rf = outlier_train
+outlier_train_rf$is_canceled = as.factor(outlier_train_rf$is_canceled)
+p2_rf <- predict(outlier_rf, outlier_train_rf)
+confusionMatrix(p2_rf, outlier_train_rf$is_canceled)
+
+#outlier_test_rf = outlier_test
+#outlier_test_rf$is_canceled = as.factor(outlier_test_rf$is_canceled)
+#p2_rf <- predict(outlier_rf, outlier_test_rf)
+#confusionMatrix(p2_rf, outlier_test_rf$is_canceled)
+```
+
+```{r}
+res <- cor(df[sapply(df,is.numeric)])
+res[order(res[,1],decreasing=TRUE), ncol=1]
+```
