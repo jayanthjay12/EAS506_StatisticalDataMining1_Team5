@@ -1,8 +1,12 @@
 ---
-title: "Predit Hotel Bookings Cancellations"
+title: "Predict Hotel Bookings Cancellations"
 author: |
     | Bharatwaj Majji 
     | UB PERSON ID: 50442312
+    | Jayanth Puthineedi 
+    | UB PERSON ID: 50442725
+    | Vishnu Bhadramraju
+    | UB PERSON ID: 50441735
 date: "`r Sys.Date()`"
 output: pdf_document
 ---
@@ -65,7 +69,6 @@ while total_of_special_requests, required_car_parking_spaces, booking_changes ha
 ```{r}
 cor<- cor(data.matrix(df))
 ggcorrplot(cor, lab=TRUE, type='lower')
-data.frame(cor)
 ```
 
 **Lead Time vs Cancellations**
@@ -173,6 +176,7 @@ for (val in cancelled_market$market_segment) {
 result <- data.frame(market_segment=cancelled_market$market_segment, percent_cancellations=percent)
 result
 ```
+From the above stats we can understand that cancellations are higher for Groups, Offline and Online TA/TO travel and tour operator bookings 
 
 **DistributionChannel vs Cancelations**
 ```{r}
@@ -187,6 +191,7 @@ for (val in cancelled_channel$distribution_channel) {
 result <- data.frame(distribution_channel=cancelled_channel$distribution_channel, percent_cancellations=percent)
 result
 ```
+From the above stats we can understand that cancellations are higher for TA/TO travel and tour operator bookings .
 
 **CustomerType vs Cancelations**
 ```{r}
@@ -201,6 +206,8 @@ for (val in cancelled_cust$customer_type) {
 result <- data.frame(customer_type=cancelled_cust$customer_type, percent_cancellations=percent)
 result
 ```
+From the above stats we can understand that cancellations are higher for Transient customer_type bookings.
+
 
 **DepositType vs Cancelations**
 ```{r}
@@ -263,21 +270,6 @@ df$lead_time <- scale(df$lead_time)
 df$adr <- scale(df$adr)
 ```
 
-**HeatMap of the dataset**
-```{r}
-heatmap(data.matrix(df), col=rainbow(256))
-```
-
-**SMOTE Analysis**
-```{r}
-canceled_count <- count(df[,'is_canceled']==1)
-canceled_count
-df_x <- subset(df, select = -c(is_canceled))
-df_smote <- SMOTE(df_x, df$is_canceled, K = 5)
-df_smote
-```
-
-
 **Divide the dataset into test and train**
 ```{r}
 head(df)
@@ -285,6 +277,7 @@ idx <- sample(nrow(df), nrow(df)*0.3)
 test <- df[idx,]
 train <-df[-idx,]
 ```
+# 3. "Data Modeling"
 
 **Logistic Regression**
 ```{r}
@@ -294,15 +287,19 @@ summary(log_classifier)
 prob_pred = predict(log_classifier, train, type='response')
 y_pred = ifelse(prob_pred > 0.5, 1, 0)
 cm=table(y_pred, train$is_canceled)
+cat("Prediction vs Actual table for Train Logistic Regression below -", "\n")
+print(cm)
 accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Train error rate for KNN -", mean(y_pred != train$is_canceled), "\n")
 cat("Train Accuracy for Logistic Regression -", accuracy, "\n")
-
+cat("---------------------------------------------------------------", "\n")
 prob_pred = predict(log_classifier, test, type='response')
 y_pred = ifelse(prob_pred > 0.5, 1, 0)
 
 # Making the Confusion Matrix
-cat("Prediction vs Actual table for Logistic Regression below -")
+cat("Prediction vs Actual table for Test Logistic Regression below -", "\n")
 cm=table(y_pred, test$is_canceled)
+print(cm)
 cat("Test error rate for Logistic Regression -", mean(y_pred != test$is_canceled), "\n")
 accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
 cat("Test Accuracy for Logistic Regression -", accuracy, "\n")
@@ -323,7 +320,7 @@ cv = lapply(folds, function(x) {
   return(accuracy)
 })
 accuracy = mean(as.numeric(cv))
-accuracy
+cat("Test Accuracy for Logistic Regression CV -", accuracy)
 ```
 
 **KNN**
@@ -334,8 +331,24 @@ y_pred = knn(train=subset(train, select = -c(is_canceled)),
              k = 5,
              prob = TRUE)
 cm <- table(train$is_canceled, y_pred)
+cat("Prediction vs Actual table for Train KNN below -", "\n")
+print(cm)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Train Accuracy for KNN -", accuracy, "\n")
+cat("Train error rate for KNN -", mean(y_pred != train$is_canceled), "\n")
+
+cat("-------------------------------------------------------", "\n")
+y_pred = knn(train=subset(train, select = -c(is_canceled)),
+             test=subset(test, select = -c(is_canceled)),
+             cl=train$is_canceled,
+             k = 5,
+             prob = TRUE)
+cm <- table(test$is_canceled, y_pred)
+cat("Prediction vs Actual table for Test KNN below -", "\n")
 cm
-cat("Test error rate for KNN -", mean(y_pred != train$is_canceled))
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Test Accuracy for KNN -", accuracy, "\n")
+cat("Test error rate for KNN -", mean(y_pred != test$is_canceled))
 ```
 
 
@@ -356,7 +369,7 @@ cv = lapply(folds, function(x) {
   return(accuracy)
 })
 accuracy = mean(as.numeric(cv))
-accuracy
+cat("Test Accuracy for KNN CVV -", accuracy, "\n")
 ```
 
 **Decision Tree**
@@ -367,6 +380,7 @@ tree.fit = rpart(is_canceled ~ ., data=train, method='class')
 tree.pred.train <- predict(tree.fit, train, type='class')
 cat("Confusion Matrix for trees - \n")
 cm <- table(tree.pred.train, y_train)
+cat("Train error for trees -", mean(tree.pred.train != y_train))
 accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
 cat("Train Accuracy for Decision Tree -", accuracy, "\n")
 
@@ -375,9 +389,10 @@ cat("Confusion Matrix for trees - \n")
 cm <- table(tree.pred.test, y_test)
 cat("Test error for trees -", mean(tree.pred.test != y_test))
 accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
-cat("Accuracy for Decision Tree -", accuracy, "\n")
+cat("Test Accuracy for Decision Tree -", accuracy, "\n")
 rpart.plot(tree.fit)
 ```
+
 **Cross Validation for Decision Tree**
 ```{r}
 folds = createFolds(train$is_canceled, k = 10)
@@ -391,43 +406,11 @@ cv = lapply(folds, function(x) {
   return(accuracy)
 })
 accuracy = mean(as.numeric(cv))
-accuracy
+cat("Test Accuracy for Decision Tree CV -", accuracy, "\n")
 ```
 
 ```{r}
 imp <- data.frame(imp = tree.fit$variable.importance)
-df2 <- imp %>% 
-  tibble::rownames_to_column() %>% 
-  dplyr::rename("variable" = rowname) %>% 
-  dplyr::arrange(imp) %>%
-  dplyr::mutate(variable = forcats::fct_inorder(variable))
-ggplot2::ggplot(df2) +
-  geom_col(aes(x = variable, y = imp),
-           col = "black", show.legend = F) +
-  coord_flip() +
-  scale_fill_grey() +
-  theme_bw()
-```
-**Pruned Tree**
-```{r}
-(best_cp <- tree.fit$cptable[which.min(tree.fit$cptable[, "xerror"]), "CP"])
-tree.prune <- prune(tree.fit, cp=best_cp)
-tree.prune.pred.train <- predict(tree.prune, train, type="class")
-cm <- table(tree.prune.pred.train, train$is_canceled)
-accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
-cat("Train Accuracy for PrunedTree -", accuracy, "\n")
-
-tree.prune.pred.test <- predict(tree.prune, test, type="class")
-cat("Confusion Matrix for pruned tree - \n")
-cm <- table(tree.prune.pred.test, test$is_canceled)
-cat("Test error for pruned trees -", mean(tree.prune.pred.test != test$is_canceled))
-accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
-cat("Accuracy for PrunedTree -", accuracy, "\n")
-rpart.plot(tree.prune)
-```
-
-```{r}
-imp <- data.frame(imp = tree.prune$variable.importance)
 df2 <- imp %>% 
   tibble::rownames_to_column() %>% 
   dplyr::rename("variable" = rowname) %>% 
@@ -446,80 +429,33 @@ ggplot2::ggplot(df2) +
 train_rf = train
 train_rf$is_canceled = as.factor(train_rf$is_canceled)
 rf <- randomForest(is_canceled~., data = train_rf)
-```
+pred_train_rf <- predict(rf, train_rf)
+cm <- table(pred_train_rf, train_rf$is_canceled)
+cat("Confusion Matrix for RandomForest - \n")
+print(cm)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Train Accuracy for RandomForest -", accuracy, "\n")
 
-```{r}
-#train_rf = train
-#train_rf$is_canceled = as.factor(train_rf$is_canceled)
-#p2_rf <- predict(rf, train_rf)
-#confusionMatrix(p2_rf, train_rf$is_canceled)
+cat("---------------------------------------", "\n")
 
 test_rf = test
 test_rf$is_canceled = as.factor(test_rf$is_canceled)
-p2_rf <- predict(rf, test_rf)
-confusionMatrix(p2_rf, test_rf$is_canceled)
-```
-```{r}
-cm <- table(p2_rf, test_rf$is_canceled)
+pred_test_rf <- predict(rf, test_rf)
+cat("Confusion Matrix for RandomForest - \n")
+cm <- table(pred_test_rf, test_rf$is_canceled)
+print(cm)
 accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
-cat("Accuracy for RandomForest -", accuracy, "\n")
+cat("Test Accuracy for RandomForest -", accuracy, "\n")
 ```
 
 ```{r}
 varImpPlot(rf, 
            sort = T,
            n.var = 10,
-           main = "top 10 - variable importance")
+           main = "Top 10 - RF variable importance")
 importance(rf)
 varUsed(rf)
 ```
-```{r}
-pca1<-prcomp(df)
-loads<-pca1$rotation
-scores<-pca1$x
-#Select number of PCs
-plot(pca1$sdev)
-```
-
-```{r}
-data <- cor(df[sapply(df,is.numeric)])
- 
-data1 <- melt(data)
- 
-ggplot(data1, aes(x = Var1,
-                  y = Var2,
-                  fill = value))+geom_tile()
-```
-
-```{r}
-cor<- cor(data.matrix(df))
-ggcorrplot(cor, lab=TRUE)
-```
-
-```{r}
-rf.pred.test <- predict(rf, test, type = "class")
-#cm <- table(rf.pred.test, test$is_canceled)
-confusionMatrix(rf.pred.test, as.factor(test$is_canceled))
-
-```
-```{r}
-table(factor(train_rf$Stage))
-library(caret)
-p1_rf <- predict(rf,train_rf)
-confusionMatrix(p1_rf,train_rf$Stage)
-```
-
-```{r}
-oj.randomForest.pred <- predict(oj.randomForest, train, type = "class")
-cat("Confusion Matrix for randomForest - \n")
-rf.pred.test = predict(rf, newdata=test)
-cat("Confusion Matrix for randomForest - \n")
-cm <- table(rf.pred.test, test$is_canceled)
-accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
-cat("Accuracy for RandomForest -", accuracy, "\n")
-varImpPlot(rf, sort = T, n.var = 10, main = "Top 10 features")
-```
-
 **AdaBoost**
 ```{r}
 adaboost <- gbm(is_canceled ~ ., data=train,
@@ -528,48 +464,229 @@ adaboost <- gbm(is_canceled ~ ., data=train,
 )
 adaboost.pred <- predict(adaboost, train, type='response') %>% round()
 cm <- table(adaboost.pred, train$is_canceled)
+cat("Confusion Matrix for AdaBoost - \n")
+print(cm)
 accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
-accuracy
+cat("Train Accuracy for AdaBoost -", accuracy, "\n")
 
 adaboost.pred <- predict(adaboost, test, type='response') %>% round()
 cm <- table(adaboost.pred, test$is_canceled)
+cat("Confusion Matrix for AdaBoost - \n")
+print(cm)
 accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
-accuracy
+cat("Test Accuracy for AdaBoost -", accuracy, "\n")
 ```
 
 ```{r}
 summary(adaboost)
 ```
+# 4. "Data Modeling with Important Features"
+
+**Create Dataframe with important 5 features**
+```{r}
+df_features <- df
+df_features <- subset(df_features, select=c(deposit_type, adr, total_of_special_requests, market_segment, lead_time, is_canceled))
+head(df_features)
+```
+**Split into test and train dataset**
+```{r}
+idx <- sample(nrow(df_features), nrow(df_features)*0.3) 
+test_features <- df_features[idx,]
+train_features <- df_features[-idx,]
+```
+
+**Logistic Regression with features**
+```{r}
+log_classifier = glm(formula=is_canceled ~ ., family=binomial, data=train_features)
+summary(log_classifier)
+
+prob_pred = predict(log_classifier, train_features, type='response')
+y_pred = ifelse(prob_pred > 0.5, 1, 0)
+cm=table(y_pred, train_features$is_canceled)
+cat("Prediction vs Actual table for Train Logistic Regression below -", "\n")
+print(cm)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Train error rate for KNN -", mean(y_pred != train_features$is_canceled), "\n")
+cat("Train Accuracy for Logistic Regression -", accuracy, "\n")
+cat("---------------------------------------------------------------", "\n")
+prob_pred = predict(log_classifier, test_features, type='response')
+y_pred = ifelse(prob_pred > 0.5, 1, 0)
+
+# Making the Confusion Matrix
+cat("Prediction vs Actual table for Test Logistic Regression below -", "\n")
+cm=table(y_pred, test_features$is_canceled)
+print(cm)
+cat("Test error rate for Logistic Regression -", mean(y_pred != test_features$is_canceled), "\n")
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Test Accuracy for Logistic Regression -", accuracy, "\n")
+```
+
+**Cross Validation for Logistic Regression With Imp Features**
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+folds = createFolds(train_features$is_canceled, k = 10)
+cv = lapply(folds, function(x) {
+  training_fold = train_features[-x, ]
+  test_fold = train_features[x, ]
+  log_classifier = glm(formula=is_canceled ~ ., family=binomial, data=training_fold)
+  prob_pred = predict(log_classifier, test_fold, type='response')
+  y_pred = ifelse(prob_pred > 0.5, 1, 0)
+  cm=table(y_pred, test_fold$is_canceled)
+  accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+  return(accuracy)
+})
+accuracy = mean(as.numeric(cv))
+cat("Test Accuracy for Logistic Regression CV -", accuracy)
+```
+
+**KNN With Imp Features**
+```{r}
+y_pred = knn(train=subset(train_features, select = -c(is_canceled)),
+             test=subset(train_features, select = -c(is_canceled)),
+             cl=train_features$is_canceled,
+             k = 5,
+             prob = TRUE)
+cm <- table(train_features$is_canceled, y_pred)
+cat("Prediction vs Actual table for Train KNN below -", "\n")
+print(cm)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Train Accuracy for KNN -", accuracy, "\n")
+cat("Train error rate for KNN -", mean(y_pred != train_features$is_canceled), "\n")
+
+cat("-------------------------------------------------------", "\n")
+y_pred = knn(train=subset(train_features, select = -c(is_canceled)),
+             test=subset(test_features, select = -c(is_canceled)),
+             cl=train_features$is_canceled,
+             k = 5,
+             prob = TRUE)
+cm <- table(test_features$is_canceled, y_pred)
+cat("Prediction vs Actual table for Test KNN below -", "\n")
+cm
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Test Accuracy for KNN -", accuracy, "\n")
+cat("Test error rate for KNN -", mean(y_pred != test_features$is_canceled))
+```
+
+**Cross Validation for KNN**
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+folds = createFolds(train_features$is_canceled, k = 10)
+cv = lapply(folds, function(x) {
+  training_fold = train_features[-x, ]
+  test_fold = train_features[x, ]
+  y_pred = knn(train=subset(training_fold, select = -c(is_canceled)),
+             test=subset(test_fold, select = -c(is_canceled)),
+             cl=training_fold$is_canceled,
+             k = 5,
+             prob = TRUE)
+  cm=table(y_pred, test_fold$is_canceled)
+  accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+  return(accuracy)
+})
+accuracy = mean(as.numeric(cv))
+cat("Test Accuracy for KNN CVV -", accuracy, "\n")
+```
+
+**Decision Tree With Imp Features**
+```{r}
+y_train = train_features$is_canceled
+y_test = test_features$is_canceled
+tree.fit = rpart(is_canceled ~ ., data=train_features, method='class')
+tree.pred.train <- predict(tree.fit, train_features, type='class')
+cat("Confusion Matrix for trees - \n")
+cm <- table(tree.pred.train, y_train)
+cat("Train error for trees -", mean(tree.pred.train != y_train))
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Train Accuracy for Decision Tree -", accuracy, "\n")
+
+tree.pred.test <- predict(tree.fit, test_features, type='class')
+cat("Confusion Matrix for trees - \n")
+cm <- table(tree.pred.test, y_test)
+cat("Test error for trees -", mean(tree.pred.test != y_test))
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Test Accuracy for Decision Tree -", accuracy, "\n")
+rpart.plot(tree.fit)
+```
+**Cross Validation for Decision Tree**
+```{r}
+folds = createFolds(train_features$is_canceled, k = 10)
+cv = lapply(folds, function(x) {
+  training_fold = train_features[-x, ]
+  test_fold = train_features[x, ]
+  tree.fit = rpart(is_canceled ~ ., data=training_fold, method='class')
+  tree.pred.test <- predict(tree.fit, test_fold, type='class')
+  cm=table(tree.pred.test, test_fold$is_canceled)
+  accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+  return(accuracy)
+})
+accuracy = mean(as.numeric(cv))
+cat("Test Accuracy for Decision Tree CV -", accuracy, "\n")
+```
+
+**Random Forest With Imp Features**
+```{r}
+train_rf = train_features
+train_rf$is_canceled = as.factor(train_rf$is_canceled)
+rf <- randomForest(is_canceled~., data = train_rf)
+pred_train_rf <- predict(rf, train_rf)
+cm <- table(pred_train_rf, train_rf$is_canceled)
+cat("Confusion Matrix for RandomForest - \n")
+print(cm)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Train Accuracy for RandomForest -", accuracy, "\n")
+
+cat("---------------------------------------", "\n")
+
+test_rf = test_features
+test_rf$is_canceled = as.factor(test_rf$is_canceled)
+pred_test_rf <- predict(rf, test_rf)
+cat("Confusion Matrix for RandomForest - \n")
+cm <- table(pred_test_rf, test_rf$is_canceled)
+print(cm)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Test Accuracy for RandomForest -", accuracy, "\n")
+```
+
+**AdaBoost With Imp Features**
+```{r}
+adaboost <- gbm(is_canceled ~ ., data=train_features,
+  distribution = "adaboost",
+  n.trees = 500
+)
+adaboost.pred <- predict(adaboost, train_features, type='response') %>% round()
+cm <- table(adaboost.pred, train_features$is_canceled)
+cat("Confusion Matrix for AdaBoost - \n")
+print(cm)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Train Accuracy for AdaBoost -", accuracy, "\n")
+
+adaboost.pred <- predict(adaboost, test_features, type='response') %>% round()
+cm <- table(adaboost.pred, test_features$is_canceled)
+cat("Confusion Matrix for AdaBoost - \n")
+print(cm)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Test Accuracy for AdaBoost -", accuracy, "\n")
+```
+
+# 5. "Outliers with Important Features"
 
 **BoxPlots**
 ```{r}
-outlier_df <- df
-outlier_df <- subset(outlier_df, select=c(deposit_type, adr, total_of_special_requests, market_segment, lead_time, is_canceled))
-head(outlier_df)
+outlier_df <- df_features
 
-boxplot(outlier_df$lead_time, horizontal = TRUE)
+box_plot <- data.frame(adr = outlier_df$adr,
+                   deposit_type = outlier_df$deposit_type,
+                   total_spl_requests = outlier_df$total_of_special_requests,
+                   market_segment=outlier_df$market_segment,
+                   lead_time=outlier_df$lead_time)
+boxplot(box_plot)
+
 outliers = boxplot(outlier_df$lead_time, plot=FALSE)$out
 outlier_df = outlier_df[-which(outlier_df$lead_time %in% outliers),]
-#idx <- sample(nrow(outlier_df), nrow(outlier_df)*0.3) 
-#outlier_test <- outlier_df[idx,]
-#outlier_train <- outlier_df[-idx,]
 
-```
-```{r}
-boxplot(outlier_df$adr, horizontal = TRUE)
-```
-
-```{r}
-boxplot(outlier_df$adr, horizontal = TRUE)
 outliers = boxplot(outlier_df$adr, plot=FALSE)$out
 outlier_df = outlier_df[-which(outlier_df$adr %in% outliers),]
 
-boxplot(outlier_df$lead_time, horizontal = TRUE)
-outliers = boxplot(outlier_df$lead_time, plot=FALSE)$out
-outlier_df = outlier_df[-which(outlier_df$lead_time %in% outliers),]
-```
-
-```{r}
 box_plot <- data.frame(adr = outlier_df$adr,
                    deposit_type = outlier_df$deposit_type,
                    total_spl_requests = outlier_df$total_of_special_requests,
@@ -584,55 +701,26 @@ outlier_test <- outlier_df[idx,]
 outlier_train <-outlier_df[-idx,]
 ```
 
+**RandomForest With Imp Features and no outliers**
 ```{r}
 outlier_train_rf = outlier_train
 outlier_train_rf$is_canceled = as.factor(outlier_train_rf$is_canceled)
 outlier_rf <- randomForest(is_canceled~., data = outlier_train_rf)
-confusionMatrix(outlier_rf, outlier_train_rf$is_canceled)
+pred_train_rf <- predict(outlier_rf, outlier_train_rf)
+cm <- table(pred_train_rf, outlier_train_rf$is_canceled)
+cat("Confusion Matrix for RandomForest No Outliers and Imp Features - \n")
+print(cm)
+accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+cat("Train Accuracy for RandomForest Without Outliers -", accuracy, "\n")
+
+cat("----------------------------------------------------------", "\n")
 
 outlier_test_rf = outlier_test
 outlier_test_rf$is_canceled = as.factor(outlier_test_rf$is_canceled)
 outlier_p2_rf <- predict(outlier_rf, outlier_test_rf)
-confusionMatrix(outlier_p2_rf, outlier_test_rf$is_canceled)
-
 cm <- table(outlier_p2_rf, outlier_test_rf$is_canceled)
+cat("Confusion Matrix for RandomForest No Outliers and Imp Features - \n")
+print(cm)
 accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
-cat("Accuracy for RandomForest Outliers -", accuracy, "\n")
-
-varImpPlot(outlier_rf, 
-           sort = T,
-           n.var = 10,
-           main = "top 10 - variable importance")
-importance(outlier_rf)
-varUsed(outlier_rf)
-```
-
-```{r}
-outlier_df <- df
-outlier_df <- subset(outlier_df, select=c(deposit_type, adr, total_of_special_requests, market_segment, lead_time, is_canceled))
-head(outlier_df)
-
-```
-
-```{r}
-outlier_train_rf = outlier_train
-outlier_train_rf$is_canceled = as.factor(outlier_train_rf$is_canceled)
-outlier_rf <- randomForest(is_canceled~., data = outlier_train_rf)
-```
-
-```{r}
-outlier_train_rf = outlier_train
-outlier_train_rf$is_canceled = as.factor(outlier_train_rf$is_canceled)
-p2_rf <- predict(outlier_rf, outlier_train_rf)
-confusionMatrix(p2_rf, outlier_train_rf$is_canceled)
-
-#outlier_test_rf = outlier_test
-#outlier_test_rf$is_canceled = as.factor(outlier_test_rf$is_canceled)
-#p2_rf <- predict(outlier_rf, outlier_test_rf)
-#confusionMatrix(p2_rf, outlier_test_rf$is_canceled)
-```
-
-```{r}
-res <- cor(df[sapply(df,is.numeric)])
-res[order(res[,1],decreasing=TRUE), ncol=1]
+cat("Test Accuracy for RandomForest Without Outliers -", accuracy, "\n")
 ```
